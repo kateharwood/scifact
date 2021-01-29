@@ -1,5 +1,4 @@
 #!/bin/bash
-/net/nfs2.corp/s2-research/davidw/proj/scifact/scifact/data/claims_train.jsonl
 #
 # This script recreates table 4 of the paper.
 #
@@ -108,6 +107,6 @@ python3 verisci/inference/merge_predictions.py \
 # Evaluate final predictions
 echo; echo "Evaluating."
 python3 verisci/evaluate/pipeline.py \
-    --dataset data/claims_${dataset}.jsonl \
+    --gold data/claims_${dataset}.jsonl \
     --corpus data/corpus.jsonl \
     --prediction prediction/merged_predictions.jsonl

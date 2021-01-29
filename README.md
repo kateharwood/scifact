@@ -1,14 +1,26 @@
-# SciFact README
+# SciFact
 
 This repository contains data and code for the paper [Fact or Fiction: Verifying Scientific Claims](https://arxiv.org/abs/2004.14974) by David Wadden, Shanchuan Lin, Kyle Lo, Lucy Lu Wang, Madeleine van Zuylen, Arman Cohan, and Hannaneh Hajishirzi.
 
-- Project [website and demo](https://scifact.apps.allenai.org), including a COVID-19 claim verification demo. For a heavier-weight COVID claim verifier, see the section on [verifying COVID-19 claims](#verify-claims-about-covid-19).
+⬇️[**Download the dataset here**](https://scifact.s3-us-west-2.amazonaws.com/release/latest/data.tar.gz).
+
+🏆[**Participate in SCIVER shared task here**](https://sdproc.org/2021/sharedtasks.html#sciver).
+
+📈[**Check out the leaderboard here**](https://leaderboard.allenai.org/scifact/).
+
+You can also check out our COVID-19 claim verification [demo](https://scifact.apps.allenai.org). For a heavier-weight COVID claim verifier, see the section on [verifying COVID-19 claims](#verify-claims-about-covid-19).
+
+
+**Update (Dec 2020)**: SciFact will be used for the [SciVer](https://sdproc.org/2021/sharedtasks.html#sciver) shared task to be featured at the SDP workshop at NAACL 2021.  Registration is open!
+
+
+**Update (Dec 2020)**: Claim / citation context data now available to train claim generation models. See [Claim generation data](#claim-generation-data).
 
 ## Table of contents
 - [Leaderboard](#leaderboard)
 - [Dependencies](#dependencies)
 - [Run models for paper metrics](#run-models-for-paper-metrics)
-- [Download data set](#download-data-set)
+- [Dataset](#dataset)
 - [Download pre-trained models](#download-pre-trained-models)
 - [Training scripts](#training-scripts)
 - [Verify claims about COVID-19](#verify-claims-about-covid-19)
@@ -18,19 +30,7 @@ This repository contains data and code for the paper [Fact or Fiction: Verifying
 
 ## Leaderboard
 
-| System name                  | Affiliation |       Date | Sentence-level F1 | Abstract-level F1 |
-|------------------------------|-------------|------------|-------------------|-------------------|
-| VeriSci                      | AI2         | 2020-08-12 |              39.5 |              46.5 |
-| Zero-Shot (trained on FEVER) | AI2         | 2020-08-12 |              26.9 |              36.4 |
-
-
-### Submitting to the leaderboard
-
-**If you have a Google account (preferred)**: Fill out this [Google form](https://docs.google.com/forms/d/e/1FAIpQLSf-o6ZBXNCiD35f-CHdLxkHRJbcmEBVsTCJDxN_1X5PuhsJBw/viewform?usp=sf_link). You will be asked to submit a `.jsonl` file containing your test set predictions.
-
-**If you do not have a Google account**: E-mail your prediction file to the [contact](#contact) below. Make sure to provide your name and affiliation in the email.
-
-We will compute performance metrics and notify you with results. With your consent, we will also add your model's performance to the leaderboard. For information on the submission file format, see [submissions.md](doc/submissions.md).
+**UPDATE (Jan 2021)**: We now have an official [AI2 leaderboard](https://leaderboard.allenai.org/scifact/) with automated evaluation! For information on the submission file format and evaluation metrics, see [evaluation.md](doc/evaluation.md). Or, check out the [getting started](https://leaderboard.allenai.org/scifact/submissions/get-started) page on the leaderboard.
 
 
 ## Dependencies
@@ -75,17 +75,47 @@ To recreate Table 4:
 - `[dataset]` options: `dev`, `test`
 
 
-## Download data set
+## Dataset
 
 Download with script: The data will be downloaded and stored in the `data` directory.
 ```bash
 ./script/download-data.sh
 ```
-Or, [click here](https://scifact.s3-us-west-2.amazonaws.com/release/2020-05-01/data.tar.gz) to download the tarball.
+Or, [click here](https://scifact.s3-us-west-2.amazonaws.com/release/latest/data.tar.gz) to download the tarball.
 
-The claims are split into `claims_train.jsonl`, `claims_dev.jsonl`, and `claims_test.jsonl`, one claim per line. The labels are removed for the test set. The corpus of evidence documents is `corpus.jsonl`, one evidence document per line.
+The claims are split into `claims_train.jsonl`, `claims_dev.jsonl`, and `claims_test.jsonl`, one claim per line. The claim and dev sets contain labels, while the test set is unlabeled. For test set evaluation, submit to the [leaderboard](https://leaderboard.allenai.org/scifact)! The corpus of evidence documents is `corpus.jsonl`, one evidence document per line.
+
+Due to the relatively small size of the dataset, we also provide a 5-fold cross-validation split that may be useful for model development. After unzipping the tarball, the data will organized like this:
+
+```
+data
+| corpus.jsonl
+| claims_train.jsonl
+| claims_dev.jsonl
+| claims_test.jsonl
+| cross_validation
+  | fold_1
+    | claims_train_1.jsonl
+    | claims_dev_1.jsonl
+  ...
+  | fold_5
+    | claims_train_5.jsonl
+    | claims_dev_5.jsonl
+```
 
 See [data.md](doc/data.md) for descriptions of the schemas for each file type.
+
+
+### Claim generation data
+
+We also make available the collection of claims together with the documents and citation contexts they are based on. We hope that these data will facilitate the training of "claim generation" models that can summarize a citation context into atomic claims. Click [here](https://scifact.s3-us-west-2.amazonaws.com/release/latest/claims_with_citances.jsonl) to download the file, or enter
+
+```bash
+wget https://scifact.s3-us-west-2.amazonaws.com/release/latest/claims_with_citances.jsonl -P data
+```
+
+For more information on the data, see [claims-with-citances.md](doc/claims-with-citances.md)
+
 
 ## Download pre-trained models
 
@@ -109,7 +139,7 @@ After downloading the pretrained-model, you can follow instruction [model.md](do
 
 ## Training scripts
 
-See [training.md](training.md).
+See [training.md](doc/training.md).
 
 ## Verify claims about COVID-19
 
@@ -132,15 +162,16 @@ python script/verify_covid.py \
   --full_abstract
 ```
 
+The 36 claims COVID claims mentions in the paper can be found at [covid/claims.txt](covid/claims.txt).
+
 ## Citation
 
 ```bibtex
-@article{Wadden2020FactOF,
+@inproceedings{Wadden2020FactOF,
   title={Fact or Fiction: Verifying Scientific Claims},
-  author={David Wadden and Kyle Lo and Lucy Lu Wang and Shanchuan Lin and Madeleine van Zuylen and Arman Cohan and Hannaneh Hajishirzi},
-  journal={ArXiv},
+  author={David Wadden and Shanchuan Lin and Kyle Lo and Lucy Lu Wang and Madeleine van Zuylen and Arman Cohan and Hannaneh Hajishirzi},
+  booktitle={EMNLP},
   year={2020},
-  volume={abs/2004.14974}
 }
 ```
 
