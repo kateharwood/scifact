@@ -15,14 +15,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--corpus', type=str, required=True)
 parser.add_argument('--claim-train', type=str, required=True)
 parser.add_argument('--claim-dev', type=str, required=True)
-parser.add_argument('--claim-unsup', type=str, required=True)
-parser.add_argument('--claim-aug', type=str, required=True)
 parser.add_argument('--dest', type=str, required=True, help='Folder to save the weights')
 parser.add_argument('--model', type=str, default='roberta-large')
 parser.add_argument('--epochs', type=int, default=20)
 parser.add_argument('--batch-size-gpu', type=int, default=8, help='The batch size to send through GPU')
 parser.add_argument('--batch-size-accumulated', type=int, default=256, help='The batch size for each gradient update')
 
+parser.add_argument('--data-uda', type=str, required=False, help='raw and augmented unlabeled data for UDA')
 parser.add_argument('--batch-size-unsup-ratio', type=float, default=0, help='The batch size ratio between super and unsuper')
 parser.add_argument('--uda-coeff', type=float, default=1, help=' ')
 parser.add_argument('--tsa', type=str, default="", choices=["", "linear_schedule", "log_schedule", "exp_schedule"], help=' Training Signal Annealing (TSA) ')
@@ -37,9 +36,10 @@ parser.add_argument('--no_cuda', type=bool, default=False, help='whether using G
 
 args = parser.parse_args()
 
-
-logger = logging.getLogger(__name__)
 # Setup logging
+logger = logging.getLogger(__name__)
+if not os.path.exists(args.dest):
+    os.makedirs(args.dest)
 logging.basicConfig(
     filename=os.path.join(args.dest,"logging.txt"),
     filemode='w',
@@ -65,23 +65,51 @@ logger.info("Training/evaluation parameters %s", args)
 class SciFactRationaleSelectionDataset(Dataset):
     def __init__(self, corpus: str, claims: str):
         self.samples = []
-        corpus = {doc['doc_id']: doc for doc in jsonlines.open(corpus)}
+        corpus = {doc['cord_id']: doc for doc in jsonlines.open(corpus)}
         for claim in jsonlines.open(claims):
-            for doc_id, evidence in claim['evidence'].items():
-                doc = corpus[int(doc_id)]
-                evidence_sentence_idx = {s for es in evidence for s in es['sentences']}
-                for i, sentence in enumerate(doc['abstract']):
-                    self.samples.append({
-                        'claim': claim['claim'],
-                        'sentence': sentence,
-                        'evidence': i in evidence_sentence_idx
-                    })
+            #for doc_id, evidence in claim['evidence'].items():
+            doc = corpus[claim["cord_id"]]
+            evidence_sentence_idx = {es["sent_index"] for es in claim["evidence_set"]}
+            for i, sentence in enumerate(doc['abstract']):
+                self.samples.append({
+                    'claim': claim['claim'],
+                    'sentence': sentence,
+                    'evidence': i in evidence_sentence_idx
+                })
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
         return self.samples[idx]
+
+
+class SciFactRationaleSelectionDataset_UDA(Dataset):
+    def __init__(self, file, is_aug=False):
+      
+        self.samples = []
+        #labels = {'SUPPORTS': 2, 'NOT ENOUGH INFO': 1, 'REFUTES': 0}
+        for data in jsonlines.open(file):
+            #if data['label'] == 'NOT ENOUGH INFO':
+            if data['abstracts']:
+                #indices = sorted(random.sample(range(len(data['sentences'])), k=1))
+                #sentences = [data['sentences'][i] for i in indices]
+
+                for mid_language, back_translated_claim in data["back_translated"]:
+                
+                    for abstract in data['abstracts'].values():
+                        self.samples.extend([{
+                            'claim': back_translated_claim if is_aug else data['claim'] ,
+                            'sentence': sent,
+                            #'label': labels['NOT ENOUGH INFO']
+                        } for sent in abstract])
+                   
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        return self.samples[index]
+
 
 class ConcatDataset(torch.utils.data.Dataset):
     def __init__(self, *datasets):
@@ -94,17 +122,16 @@ class ConcatDataset(torch.utils.data.Dataset):
         return max(len(d) for d in self.datasets)
 
 trainset = SciFactRationaleSelectionDataset(args.corpus, args.claim_train)
-#trainset = trainset[:int(len(trainset)*.7)]
 devset = SciFactRationaleSelectionDataset(args.corpus, args.claim_dev)
 if args.batch_size_unsup_ratio:
-    unsupset = SciFactRationaleSelectionDataset(args.corpus, args.claim_unsup)#[int(len(trainset)*.7):]
-    augset = SciFactRationaleSelectionDataset(args.corpus, args.claim_aug)#[int(len(trainset)*.7):]
+    unsupset = SciFactRationaleSelectionDataset_UDA(args.data_uda, is_aug=False)#[int(len(trainset)*.7):]
+    augset = SciFactRationaleSelectionDataset_UDA(args.data_uda, is_aug=True)#[int(len(trainset)*.7):]
     assert len(unsupset) == len(augset)
     concatset = ConcatDataset(unsupset, augset)
     batch_size_unsup = int(args.batch_size_gpu * args.batch_size_unsup_ratio)
 
-tokenizer = AutoTokenizer.from_pretrained(args.model)
-model = AutoModelForSequenceClassification.from_pretrained(args.model).to(device)
+tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir="cache")
+model = AutoModelForSequenceClassification.from_pretrained(args.model, cache_dir="cache").to(device)
 optimizer = torch.optim.Adam([
     {'params': model.roberta.parameters(), 'lr': args.lr_base},  # if using non-roberta model, change the base param path.
     {'params': model.classifier.parameters(), 'lr': args.lr_linear}
@@ -138,9 +165,15 @@ def evaluate(model, dataset):
             logits = model(**encoded_dict)[0]
             targets.extend(batch['evidence'].float().tolist())
             outputs.extend(logits.argmax(dim=1).tolist())
-    return f1_score(targets, outputs, zero_division=0),\
-           precision_score(targets, outputs, zero_division=0),\
-           recall_score(targets, outputs, zero_division=0)
+    # return f1_score(targets, outputs, zero_division=0),\
+    #        precision_score(targets, outputs, zero_division=0),\
+    #        recall_score(targets, outputs, zero_division=0)
+    return {
+        'macro_f1': f1_score(targets, outputs, zero_division=0, average='macro'),
+        'f1': tuple(f1_score(targets, outputs, zero_division=0, average=None)),
+        'precision': tuple(precision_score(targets, outputs, zero_division=0, average=None)),
+        'recall': tuple(recall_score(targets, outputs, zero_division=0, average=None))
+    }
 
 def unsup_feedforward(model, batch_unsup, batch_aug):
     logSoftmax_fct = torch.nn.LogSoftmax(dim=-1)
@@ -153,7 +186,9 @@ def unsup_feedforward(model, batch_unsup, batch_aug):
     logits_aug = logSoftmax_fct(logits_aug)
 
     if args.uda_softmax_temp != -1:
-        logits_u = logits_u / args.uda_softmax_temp
+        #logits_u = logits_u / args.uda_softmax_temp
+        logits_u = logSoftmax_fct(logits_u / args.uda_softmax_temp)
+
     if args.uda_confidence_thresh != -1:
         softmax_logits_u = torch.nn.Softmax(dim=-1)(logits_u)
         max_logits_u = torch.max(softmax_logits_u, -1)[0] #return is tuple (values, indices)
@@ -162,7 +197,6 @@ def unsup_feedforward(model, batch_unsup, batch_aug):
         loss_unsup = torch.mean(loss_unsup) # average on all or only non-zero examples
     else:
         loss_unsup = torch.nn.KLDivLoss(reduction="batchmean")(logits_aug, logits_u.detach()) # (input, target) KLDivLoss will apply logSoftmax on target
-    
     return loss_unsup
 
 def get_tsa_threshold(schedule, global_step, num_train_steps, start, end):
@@ -183,17 +217,20 @@ def get_tsa_threshold(schedule, global_step, num_train_steps, start, end):
 if args.n_gpu > 1:
     model = torch.nn.DataParallel(model)
 
-for e in range(args.epochs):
+best_epoch = 0
+best_dev_mF1 = 0
+best_dir = ""
 
+for e in range(args.epochs):
     model.train()
-    t = tqdm(DataLoader(trainset, batch_size=args.batch_size_gpu))# , shuffle=True
+    t = tqdm(DataLoader(trainset, batch_size=args.batch_size_gpu, shuffle=False))
     if args.batch_size_unsup_ratio:
-        concat_loader = DataLoader(concatset, batch_size=batch_size_unsup, ) # shuffle=True
+        concat_loader = DataLoader(concatset, batch_size=batch_size_unsup, shuffle=False)
         concat_repeated = cycle(concat_loader)
     for i, batch in enumerate(t):
         encoded_dict = encode(batch['claim'], batch['sentence'])
         loss, logits = model(**encoded_dict, labels=batch['evidence'].long().to(device))
-        #import pdb; pdb.set_trace()
+        
         if args.tsa:
             num_labels = model.module.num_labels if args.n_gpu > 1 else model.num_labels
             labels = batch['evidence'].long().to(device)
@@ -211,7 +248,7 @@ for e in range(args.epochs):
             
             per_example_loss = torch.nn.CrossEntropyLoss(reduction='none')(logits.view(-1, num_labels), labels.view(-1))
             per_example_loss = per_example_loss * loss_mask
-            loss = torch.sum(per_example_loss) / max(torch.sum(loss_mask), torch.tensor(1))
+            loss = torch.sum(per_example_loss) / max(torch.sum(loss_mask), torch.tensor(1).cuda())
         else:
             tsa_threshold = 1
         
@@ -232,11 +269,48 @@ for e in range(args.epochs):
             t.set_description(f'Epoch {e}, iter {i}, tsa_threshold {round(float(tsa_threshold), 3)}, loss: {round(loss.item(), 4)}')
     scheduler.step()
     train_score = evaluate(model, trainset)
-    logger.info(f'Epoch {e}, train f1: %.4f, precision: %.4f, recall: %.4f' % train_score)
+    logger.info(f'Epoch {e} train ')
+    logger.info(train_score)
+    #logger.info(f'Epoch {e}, train f1: %.4f, precision: %.4f, recall: %.4f' % train_score)
     dev_score = evaluate(model, devset)
-    logger.info(f'Epoch {e}, dev f1: %.4f, precision: %.4f, recall: %.4f' % dev_score)
+    logger.info(f'Epoch {e} dev ')
+    logger.info(dev_score)
+    #logger.info(f'Epoch {e}, dev f1: %.4f, precision: %.4f, recall: %.4f' % dev_score)
+    
     # Save
-    save_path = os.path.join(args.dest, f'epoch-{e}-f1-{int(dev_score[0] * 1e4)}')
-    os.makedirs(save_path)
-    tokenizer.save_pretrained(save_path)
-    model.module.save_pretrained(save_path) if args.n_gpu > 1 else model.save_pretrained(save_path)
+    # save_path = os.path.join(args.dest, f'epoch-{e}-f1-{int(dev_score[0] * 1e4)}')
+    # os.makedirs(save_path)
+    # tokenizer.save_pretrained(save_path)
+    # model.module.save_pretrained(save_path) if args.n_gpu > 1 else model.save_pretrained(save_path)
+   
+    if dev_score["macro_f1"] > best_dev_mF1:
+        # save new checkpoint
+        save_path = os.path.join(args.dest, f'epoch-{e}-f1-{int(dev_score["macro_f1"] * 1e4)}')
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        tokenizer.save_pretrained(save_path)
+        model.module.save_pretrained(save_path) if args.n_gpu > 1 else model.save_pretrained(save_path)
+
+
+        # Remove old best checkpoint
+        if os.path.exists(best_dir):
+            for root, subdirs, files in os.walk(best_dir):
+                for file in files:
+                    os.remove(os.path.join(root, file))
+            os.rmdir(best_dir)
+
+        best_epoch = e
+        best_dev_mF1 = dev_score["macro_f1"]
+        best_dir = save_path
+        with open(os.path.join(args.dest, "best_model_path.txt"), "w") as f:
+            f.write(best_dir)
+    
+    
+    if e == args.epochs-1 or e-best_epoch>=6: #early stop
+        # save last checkpoint
+        save_path = os.path.join(args.dest, f'epoch-{e}-f1-{int(dev_score["macro_f1"] * 1e4)}')
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        # tokenizer.save_pretrained(save_path)
+        # model.save_pretrained(save_path)
+        break
