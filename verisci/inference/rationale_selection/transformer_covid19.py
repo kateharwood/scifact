@@ -4,6 +4,9 @@ import jsonlines
 import torch
 from tqdm import tqdm
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
+import logging
+import nltk
+logging.basicConfig(level=logging.ERROR)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--corpus', type=str, required=False)
@@ -13,6 +16,7 @@ parser.add_argument('--is-oracle', type=bool, required=False, default=False)
 parser.add_argument('--model', type=str, required=False)
 parser.add_argument('--threshold', type=float, default=0.5, required=False)
 parser.add_argument('--only-rationale', action='store_true')
+parser.add_argument('--multi-sentence', type=bool, required=False,default=False) # Whether multiple sentences are used as one rationale
 parser.add_argument('--output-flex', type=str)
 parser.add_argument('--output-k2', type=str)
 parser.add_argument('--output-k3', type=str)
@@ -68,11 +72,26 @@ with torch.no_grad():
                 doc = corpus[doc_id]
                 sentences = doc['abstract']
             #import pdb; pdb.set_trace()
+            if args.multi_sentence:
+                multi_sentences = []
+                # This adds one sentence on either side of rationale sentence
+                for i in range(1,len(sentences)-1):
+                    multi_sentence = sentences[i-1] + ' ' +  sentences[i] + ' ' + sentences[i+1]
+                    multi_sentences.append(multi_sentence)
+                if multi_sentences:
+                    sentences = multi_sentences
+
+            # Ideas for future similarity scoring, but will do it on encoded sentences
+            # for sentence in sentences:
+            #     edit_distance = nltk.edit_distance(claim.split(), sentence.split())
+            #     similarity_score = edit_distance/min(len(sentence), len(claim))
+                
 
             encoded_dict = tokenizer.batch_encode_plus(
-                zip(sentences, [claim] * len(sentences)) if not args.only_rationale else sentences,
+                [list (a) for a in zip(sentences, [claim] * len(sentences))] if not args.only_rationale else sentences,
                 pad_to_max_length=True,
-                return_tensors='pt'
+                return_tensors='pt',
+                max_length=512,
             )
             encoded_dict = {key: tensor.to(device) for key, tensor in encoded_dict.items()}
             sentence_scores = torch.softmax(model(**encoded_dict)[0], dim=1)[:, 1].detach().cpu().numpy()

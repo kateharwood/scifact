@@ -8,6 +8,8 @@ from collections import defaultdict
 import csv
 from tqdm import tqdm
 from nltk.tokenize import sent_tokenize
+import nltk
+nltk.download('punkt')
 
 def search_cord(claim, cord_doi_dict):
     #Search for documents matching any of query terms (either in title or abstract)
@@ -74,7 +76,7 @@ if __name__ == '__main__':
                     'abstract': row['abstract'],
                     'cord_id': row['cord_uid']
                 }
-                cord_id_dict[row['cord_id']] = {
+                cord_id_dict[row['cord_uid']] = {
                     'title': row['title'],
                     'abstract': row['abstract'],
                     'cord_id': row['cord_uid']

@@ -13,7 +13,9 @@ from typing import List
 from sklearn.metrics import f1_score, precision_score, recall_score
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--corpus', type=str, required=True)
+parser.add_argument('--corpus', type=str, required=False)
+parser.add_argument('--covidfact-version', type=str, required=False) # If we are using the other Arkadiy's covidfact dataset
+parser.add_argument('--no-rationales', type=bool, default=False, required=False) # If we send the full abstract through as the rationale, not sentences from it
 parser.add_argument('--train', type=str, required=True, help='Path to processed train file')
 parser.add_argument('--dev', type=str, required=True, help='Path to processed train file')
 parser.add_argument('--dest', type=str, required=True, help='Folder to save the weights')
@@ -54,9 +56,12 @@ logger.info(args)
 class FeverLabelPredictionDataset(Dataset):
     def __init__(self, file):
         self.samples = []
-        corpus = {doc['cord_id']: doc for doc in jsonlines.open(args.corpus)}
 
-        labels = {'SUPPORT': 2, 'NOTENOUGHINFO': 1, 'REFUTE': 0}
+        if args.covidfact_version == 'arkadiy':
+            labels = {'SUPPORTED': 2, 'REFUTED': 0}
+        else:
+            corpus = {doc['cord_id']: doc for doc in jsonlines.open(args.corpus)}
+            labels = {'SUPPORT': 2, 'NOTENOUGHINFO': 1, 'REFUTE': 0}
         for data in jsonlines.open(file):
             # all evidences (includes "not engough info") from 'evidence_sets
             #for evidence_set in data['evidence_sets']:
@@ -65,16 +70,27 @@ class FeverLabelPredictionDataset(Dataset):
             #     'rationale': data['sent'] in data['evidence_set'],
             #     'label': labels[data['label']]
             # } for i in evidence_set])
-
-            rationale_idx = {s["sent_index"] for s in data['evidence_set']}
-            rationale_sentences = [corpus[data["cord_id"]]['abstract'][i].strip() for i in sorted(list(rationale_idx))]
-            self.samples.append({
-                'claim': data['claim'],
-                'rationale': ' '.join(rationale_sentences),
-                'label': labels[data["label"]]  # directly use the first evidence set label
-                # because currently all evidence sets have
-                # the same label
-            })
+          
+            if args.covidfact_version == 'arkadiy':
+                self.samples.append({
+                    'claim': data['claim'],
+                    'rationale': ' '.join(data['evidence']),
+                    'label': labels[data["label"]]
+                })
+            else:
+                if args.no_rationales:
+                    # rationale_sentences is the entire abstract itself
+                    rationale_sentences = corpus[data["cord_id"]]['abstract']
+                else:
+                    rationale_idx = {s["sent_index"] for s in data['evidence_set']}
+                    rationale_sentences = [corpus[data["cord_id"]]['abstract'][i].strip() for i in sorted(list(rationale_idx))]
+                self.samples.append({
+                    'claim': data['claim'],
+                    'rationale': ' '.join(rationale_sentences),
+                    'label': labels[data["label"]]  # directly use the first evidence set label
+                    # because currently all evidence sets have
+                    # the same label
+                })
 
     def __len__(self):
         return len(self.samples)
@@ -144,13 +160,15 @@ scheduler = get_cosine_schedule_with_warmup(optimizer, 0, 20)
 
 def encode(claims: List[str], rationale: List[str]):
     encoded_dict = tokenizer.batch_encode_plus(
-        zip(rationale, claims),
+        # zip(rationale, claims),
+        [list (a) for a in zip(rationale, claims)],
         pad_to_max_length=True,
         return_tensors='pt')
     if encoded_dict['input_ids'].size(1) > 512:
         # Too long for the model. Truncate it
         encoded_dict = tokenizer.batch_encode_plus(
-            zip(rationale, claims),
+            # zip(rationale, claims),
+            [list (a) for a in zip(rationale, claims)],
             max_length=512,
             truncation_strategy='only_first',
             pad_to_max_length=True,
@@ -228,7 +246,7 @@ for e in range(args.epochs):
         concat_repeated = cycle(concat_loader)
     for i, batch in enumerate(t):
         encoded_dict = encode(batch['claim'], batch['rationale'])
-        loss, logits = model(**encoded_dict, labels=batch['label'].long().to(device))
+        loss, logits = model(**encoded_dict, labels=batch['label'].long().to(device)) # If this line errors, can add return_dict=False
 
         if args.tsa:
             num_labels = model.num_labels#model.module.num_labels if args.n_gpu > 1 else 

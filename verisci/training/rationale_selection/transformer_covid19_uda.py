@@ -32,6 +32,8 @@ parser.add_argument('--lr-base', type=float, default=1e-5)
 parser.add_argument('--lr-linear', type=float, default=1e-3)
 parser.add_argument("--seed", type=int, default=42, help="random seed for initialization")
 
+parser.add_argument("--multi-sentence", type=bool, default=False, required=False) # Whether to use multiple sentences from abstract as one rationale
+
 parser.add_argument('--no_cuda', type=bool, default=False, help='whether using GPU')
 
 args = parser.parse_args()
@@ -70,12 +72,24 @@ class SciFactRationaleSelectionDataset(Dataset):
             #for doc_id, evidence in claim['evidence'].items():
             doc = corpus[claim["cord_id"]]
             evidence_sentence_idx = {es["sent_index"] for es in claim["evidence_set"]}
-            for i, sentence in enumerate(doc['abstract']):
-                self.samples.append({
-                    'claim': claim['claim'],
-                    'sentence': sentence,
-                    'evidence': i in evidence_sentence_idx
-                })
+
+            if args.multi_sentence:
+                # This adds one sentence on either side of rationale sentence
+                abstract = doc['abstract']
+                for i in range(1,len(abstract)-1):
+                    multi_sentences = abstract[i-1] + ' ' +  abstract[i] + ' ' + abstract[i+1]
+                    self.samples.append({
+                        'claim': claim['claim'],
+                        'sentence': multi_sentences,
+                        'evidence': i in evidence_sentence_idx
+                    })
+            else:
+                for i, sentence in enumerate(doc['abstract']):
+                    self.samples.append({
+                        'claim': claim['claim'],
+                        'sentence': sentence,
+                        'evidence': i in evidence_sentence_idx 
+                    })
 
     def __len__(self):
         return len(self.samples)
@@ -140,7 +154,7 @@ scheduler = get_cosine_schedule_with_warmup(optimizer, 0, 20)
 
 def encode(claims: List[str], sentences: List[str]):
     encoded_dict = tokenizer.batch_encode_plus(
-        zip(sentences, claims),
+        [list (a) for a in zip(sentences, claims)],
         pad_to_max_length=True,
         return_tensors='pt')
     if encoded_dict['input_ids'].size(1) > 512:
